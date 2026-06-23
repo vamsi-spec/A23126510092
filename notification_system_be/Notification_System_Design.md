@@ -232,3 +232,44 @@ WHERE student_id = $1 AND is_read = false;
 
 ---
 
+
+## Stage 3 - Query Analysis
+
+### 1. Is the query correct?
+Not fully correct because:
+- `SELECT *` fetches unnecessary data
+- Column names should follow snake_case (`student_id`, `is_read`, `created_at`)
+- No `LIMIT`, so it may return too many rows
+
+---
+
+### 2. Why is it slow?
+- Without indexes, database does a full table scan (O(n))
+- Sorting with `ORDER BY` adds extra cost
+
+---
+
+### 3. Improved Query
+
+```sql
+CREATE INDEX idx_notifications_student_unread 
+ON notifications(student_id, is_read, created_at DESC)
+WHERE is_read = false;
+SELECT id, notification_type, message, created_at
+FROM notifications
+WHERE student_id = 1042 AND is_read = false
+ORDER BY created_at DESC
+LIMIT 20;
+4. Is indexing every column good?
+
+No.
+
+Slows INSERT/UPDATE/DELETE
+Takes extra storage
+Only useful indexes should be created
+5. Placement notification (last 7 days)
+SELECT DISTINCT s.id, s.name, s.email
+FROM students s
+JOIN notifications n ON n.student_id = s.id
+WHERE n.notification_type = 'Placement'
+AND n.created_at >= NOW() - INTERVAL '7 days';
