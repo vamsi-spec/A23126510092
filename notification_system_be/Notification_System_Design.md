@@ -273,3 +273,66 @@ FROM students s
 JOIN notifications n ON n.student_id = s.id
 WHERE n.notification_type = 'Placement'
 AND n.created_at >= NOW() - INTERVAL '7 days';
+
+
+### Performance & Caching Strategy
+
+**Problem:** DB overwhelmed by notification fetches on every page load.
+
+---
+
+#### Strategy 1: Redis Caching
+
+Cache the notification list per student with a TTL.
+
+```
+Key:   notifications:student:{studentId}:page:{page}
+Value: JSON array of notifications
+TTL:   60 seconds
+```
+
+Flow:
+1. Request comes in → check Redis first
+2. Cache hit → return immediately (no DB hit)
+3. Cache miss → query DB → store in Redis → return
+
+**Tradeoffs:**
+- Reduces DB load by ~80-90% for read-heavy traffic
+- Stale data risk: student may not see a new notification for up to 60 seconds
+- Redis memory cost: need to manage eviction policy (LRU recommended)
+- Cache invalidation needed when a new notification is created for that student
+
+---
+
+#### Strategy 2: Pagination
+
+Instead of loading all notifications at once, load 20 at a time.
+
+```sql
+SELECT ... LIMIT 20 OFFSET ($page - 1) * 20;
+```
+
+**Tradeoffs:**
+- Drastically reduces data transfer and DB memory usage
+- Deep pagination (OFFSET 10000) is still slow — cursor-based pagination is better:
+```sql
+SELECT ... WHERE created_at < $lastSeenTimestamp ORDER BY created_at DESC LIMIT 20;
+```
+- Cursor-based is O(log n) vs OFFSET which is O(n)
+
+---
+
+#### Strategy 3: Connection Pooling
+
+Use `pg-pool` to maintain a pool of reusable DB connections instead of opening a new one per request.
+
+```javascript
+const pool = new Pool({ max: 20, idleTimeoutMillis: 30000 });
+```
+
+**Tradeoffs:**
+- Prevents connection exhaustion under high load
+- Minimal code change required
+- Pool size must be tuned — too large overwhelms the DB, too small creates a queue
+
+---
