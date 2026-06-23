@@ -336,3 +336,24 @@ const pool = new Pool({ max: 20, idleTimeoutMillis: 30000 });
 - Pool size must be tuned — too large overwhelms the DB, too small creates a queue
 
 ---
+
+
+## Stage 5
+
+### Bulk Notification Analysis
+
+**Original pseudocode shortcomings:**
+
+1. **Sequential processing** — iterating 50,000 students one by one takes too long. If each iteration takes 10ms, total time = 500 seconds
+2. **No error handling** — if `send_email` fails at student 200, remaining 49,800 get no notification
+3. **No retry logic** — failed emails are silently lost
+4. **Tight coupling** — email, DB save, and push happen in the same synchronous loop. One failure breaks all three
+5. **No batching** — 50,000 individual DB inserts instead of bulk insert
+6. **Blocks the main thread** — the API call hangs until all 50,000 are processed
+
+**Should DB save and email happen together?**
+
+No. They should be **decoupled**:
+- DB save is fast and reliable — do it immediately in a batch transaction
+- Email sending is slow and failure-prone — offload to a background queue
+- If they're coupled and email fails, you'd rollback the DB save too — meaning the student has no record of the notification at all
