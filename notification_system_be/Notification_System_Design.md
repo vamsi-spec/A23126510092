@@ -155,3 +155,80 @@ Polling: Client keeps asking server again and again (less efficient and wastes r
 
 
 
+## Stage 2
+
+### Database Choice: PostgreSQL
+
+**Why PostgreSQL over NoSQL:**
+- Notifications have a clear, structured schema with relationships (student → notifications)
+- ACID compliance ensures no notification is lost or duplicated
+- Complex queries (filter by type, date range, read status) are natural in SQL
+- support for indexing strategies.
+
+### Schema
+
+```sql
+CREATE TABLE students (
+  id          SERIAL PRIMARY KEY,
+  name        VARCHAR(255) NOT NULL,
+  email       VARCHAR(255) UNIQUE NOT NULL,
+  roll_no     VARCHAR(50) UNIQUE NOT NULL,
+  created_at  TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+);
+
+CREATE TABLE notifications (
+  id                  UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  student_id          INTEGER NOT NULL REFERENCES students(id) ON DELETE CASCADE,
+  notification_type   VARCHAR(20) NOT NULL CHECK (notification_type IN ('Placement', 'Result', 'Event')),
+  message             TEXT NOT NULL,
+  is_read             BOOLEAN DEFAULT false,
+  created_at          TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+);
+
+CREATE INDEX idx_notifications_student_id ON notifications(student_id);
+CREATE INDEX idx_notifications_type ON notifications(notification_type);
+CREATE INDEX idx_notifications_created_at ON notifications(created_at DESC);
+CREATE INDEX idx_notifications_composite ON notifications(student_id, is_read, created_at DESC);
+```
+
+### Problems at Scale (50,000 students, 5,000,000 notifications)
+
+* **Full table scans (Searching without a map)**: Without indexes, every time a student checks their notifications, the database has to read through all 5 million rows from start to finish just to find theirs. This makes requests extremely slow.
+* **Lock contention (Database traffic jams)**: When the admin sends a notification to all 50,000 students at once, the database is busy writing new rows. This can lock the tables/rows, preventing students from reading their notifications at the same time.
+* **Memory pressure (Loading too much at once)**: Trying to load all notifications for a student on every single page load uses up all the database memory. We need to use pagination (like loading 20 at a time).
+* **Index bloat (Too many lists to update)**: Having too many indexes makes searching faster but slows down saving new notifications, because the database has to update multiple index lists every single time a new notification is created.
+
+
+### SQL Queries for Stage 1 APIs
+
+```sql
+SELECT id, notification_type, message, is_read, created_at
+FROM notifications
+WHERE student_id = $1
+ORDER BY created_at DESC
+LIMIT $2 OFFSET $3;
+
+SELECT id, notification_type, message, is_read, created_at
+FROM notifications
+WHERE id = $1;
+
+UPDATE notifications
+SET is_read = true
+WHERE id = $1;
+
+UPDATE notifications
+SET is_read = true
+WHERE student_id = $1 AND is_read = false;
+
+DELETE FROM notifications WHERE id = $1;
+
+INSERT INTO notifications (student_id, notification_type, message)
+SELECT unnest($1::int[]), $2, $3;
+
+SELECT COUNT(*) as unread_count
+FROM notifications
+WHERE student_id = $1 AND is_read = false;
+```
+
+---
+
